@@ -2,7 +2,7 @@ import heapq
 import os
 from collections import Counter, defaultdict
 
-from pretokenizer import BYTE_TOKENS, pretokenize, pretokenize_file
+from .pretokenizer import BYTE_TOKENS, pretokenize, pretokenize_file
 
 
 def _load_word_freqs(

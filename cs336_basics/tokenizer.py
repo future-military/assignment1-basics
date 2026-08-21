@@ -1,7 +1,7 @@
 import json
 from collections.abc import Iterable, Iterator
 
-from pretokenizer import TOKEN_PATTERN, BYTE_TOKENS
+from .pretokenizer import TOKEN_PATTERN, BYTE_TOKENS
 import regex as re
 
 
