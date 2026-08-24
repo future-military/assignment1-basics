@@ -1,5 +1,4 @@
 import os
-from collections import Counter
 import regex as re
 from collections.abc import Iterable, Iterator
 
@@ -41,7 +40,7 @@ def train_bpe(
     with open(input_path, "r", encoding = "utf-8") as file:
         text = file.read()
 
-    pre_token_counts = Counter()
+    pre_token_counts = {}
 
 
 
@@ -58,23 +57,23 @@ def train_bpe(
             pre_token = match.group(0)
             encoded = pre_token.encode("utf-8")
             byte_tuple = tuple(BYTE_TOKENS[byte_value] for byte_value in encoded)
-            pre_token_counts[byte_tuple] += 1
+            pre_token_counts[byte_tuple] = pre_token_counts.get(byte_tuple, 0) + 1
 
     while len(vocab) < vocab_size:
-        pair_counts = Counter()
+        pair_counts = {}
 
         for token_tuple, count in pre_token_counts.items():
             if len(token_tuple) ==1:
                 continue
             for pair in zip(token_tuple, token_tuple[1:]):
-                pair_counts[pair] += count
+                pair_counts[pair] = pair_counts.get(pair, 0) + count
 
         if not pair_counts:
             break
 
         best_pair = max(pair_counts, key = lambda pair: (pair_counts[pair], pair))
         merged_token = best_pair[0] + best_pair[1]
-        new_pre_token_counts = Counter()
+        new_pre_token_counts = {}
 
         for token_tuple, count in pre_token_counts.items():
             
@@ -89,7 +88,7 @@ def train_bpe(
                     new_tokens.append(token_tuple[index])
                     index +=1
             new_token_tuple = tuple(new_tokens)
-            new_pre_token_counts[new_token_tuple] += count
+            new_pre_token_counts[new_token_tuple] = new_pre_token_counts.get(new_token_tuple, 0) + count
 
         merges.append(best_pair)
         vocab[len(vocab)] = merged_token
