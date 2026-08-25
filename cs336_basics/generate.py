@@ -106,18 +106,18 @@ def generate(
     top_k: int | None = None,
 
 ) -> str:
-    
+
     prompt_ids = tokenizer.encode(prompt)
     if not prompt_ids:
         raise ValueError("Prompt must contain at least one token.")
-    
+
     generated = torch.tensor(
         [prompt_ids],
         dtype=torch.long,
         device=DEVICE,
     )
     end_token_bytes = "<|endoftext|>".encode("utf-8")
-    
+
     end_token_id = next(
         (
             token_id
@@ -126,7 +126,7 @@ def generate(
         ),
         None,
     )
-    
+
     for _ in range(max_new_tokens):
         context = generated[:, -CONTEXT_LENGTH:]
 
@@ -181,7 +181,7 @@ def main() -> None:
     tokenizer = load_tokenizer()
     model = load_model(args.checkpoint_path)
 
-    
+
 
     generated_text = generate(
         model=model,
