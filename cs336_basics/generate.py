@@ -5,8 +5,9 @@ import argparse
 
 from cs336_basics.model import TransformerLM
 from cs336_basics.optimizer import AdamW
-from cs336_basics.serialization import load_checkpoint
+from cs336_basics.serialization import (load_checkpoint, load_checkpoint_config)
 from cs336_basics.tokenizer import Tokenizer
+from cs336_basics.config import (ModelConfig, SMOKE_MODEL_CONFIG)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,14 +16,6 @@ TOKENIZER_PATH = PROJECT_ROOT / "artifacts" / "tokenizer.pkl"
 CHECKPOINT_PATH = PROJECT_ROOT / "checkpoints" / "smoke_model.pt"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-VOCAB_SIZE = 1000
-CONTEXT_LENGTH = 64
-D_MODEL = 128
-NUM_HEADS = 4
-NUM_LAYERS = 2
-D_FF = 256
-ROPE_THETA = 10000.0
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -65,15 +58,19 @@ def load_tokenizer() -> Tokenizer:
         special_tokens=tokenizer_data["special_tokens"],
     )
 
-def load_model(checkpoint_path: Path) -> TransformerLM:
+def load_model(checkpoint_path: Path
+    ) -> tuple[TransformerLM, ModelConfig]:
+    saved_config = load_checkpoint_config(checkpoint_path)
+
+    if saved_config is None:
+        model_config = SMOKE_MODEL_CONFIG
+        print("Checkpoint has no model config; "
+              "using legacy smoke config")
+    else:
+        model_config = ModelConfig(**saved_config)
+
     model = TransformerLM(
-        vocab_size=VOCAB_SIZE,
-        context_length=CONTEXT_LENGTH,
-        d_model=D_MODEL,
-        num_heads=NUM_HEADS,
-        num_layers=NUM_LAYERS,
-        d_ff=D_FF,
-        rope_theta=ROPE_THETA,
+        **model_config.to_kwargs(),
         device=DEVICE,
         dtype=torch.float32,
     )
@@ -94,13 +91,14 @@ def load_model(checkpoint_path: Path) -> TransformerLM:
     model.eval()
     print(f"Loaded checkpoint at step {completed_steps}")
 
-    return model
+    return model, model_config
 
 @torch.no_grad()
 def generate(
     model: TransformerLM,
     tokenizer: Tokenizer,
     prompt: str,
+    context_length: int,
     max_new_tokens: int = 50,
     temperature: float = 1.0,
     top_k: int | None = None,
@@ -128,7 +126,7 @@ def generate(
     )
 
     for _ in range(max_new_tokens):
-        context = generated[:, -CONTEXT_LENGTH:]
+        context = generated[:, -context_length:]
 
         logits = model(context)
 
@@ -176,10 +174,25 @@ def generate(
 
 def main() -> None:
     args = parse_args()
+    if args.temperature <= 0:
+        raise ValueError(
+            "--temperature must be greater than 0."
+        )
+
+    if args.top_k is not None and args.top_k <= 0:
+        raise ValueError(
+            "--top-k must be greater than 0."
+        )
+
+    if args.max_new_tokens < 0:
+        raise ValueError(
+            "--max-new-tokens must be non-negative."
+    )
+
     torch.manual_seed(42)
 
     tokenizer = load_tokenizer()
-    model = load_model(args.checkpoint_path)
+    model, model_config = load_model(args.checkpoint_path)
 
 
 
@@ -187,6 +200,7 @@ def main() -> None:
         model=model,
         tokenizer=tokenizer,
         prompt=args.prompt,
+        context_length=model_config.context_length,
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         top_k=args.top_k,

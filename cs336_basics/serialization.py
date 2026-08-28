@@ -9,12 +9,16 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     iteration: int,
     out: str | os.PathLike | BinaryIO | IO[bytes],
+    model_config: dict[str, object] | None = None,
 ) -> None:
     checkpoint = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "iteration": iteration,
     }
+
+    if model_config is not None:
+        checkpoint["model_config"] = model_config
 
     torch.save(checkpoint, out)
 
@@ -33,3 +37,12 @@ def load_checkpoint(
     optimizer.load_state_dict(checkpoint["optimizer"])
 
     return checkpoint["iteration"]
+
+def load_checkpoint_config(
+        src,
+) -> dict[str, object] | None:
+    checkpoint = torch.load(
+        src,
+        map_location="cpu",
+    )
+    return checkpoint.get("model_config")

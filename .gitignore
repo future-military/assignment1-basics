@@ -166,3 +166,5 @@ cython_debug/
 data/
 artifacts/
 checkpoints/
+logs/*.csv
+logs/*.png
