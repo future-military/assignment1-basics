@@ -24,3 +24,19 @@ SMOKE_MODEL_CONFIG = ModelConfig(
     d_ff=256,
     rope_theta=10000.0,
 )
+
+TINYSTORIES_MODEL_CONFIG = ModelConfig(
+    vocab_size=10000,
+    context_length=256,
+    d_model=512,
+    num_heads=16,
+    num_layers=4,
+    d_ff=1344,
+    rope_theta=10000.0,
+)
+
+
+MODEL_CONFIGS = {
+    "smoke": SMOKE_MODEL_CONFIG,
+    "tinystories": TINYSTORIES_MODEL_CONFIG,
+}

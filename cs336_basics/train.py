@@ -31,11 +31,9 @@ from cs336_basics.serialization import (
     load_checkpoint,
     save_checkpoint,
 )
-from cs336_basics.config import SMOKE_MODEL_CONFIG
+from cs336_basics.config import (MODEL_CONFIGS, ModelConfig)
 
 #configurations
-
-MODEL_CONFIG = SMOKE_MODEL_CONFIG
 
 BATCH_SIZE = 8
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -134,6 +132,25 @@ def parse_args() -> argparse.Namespace:
         default=LOG_PATH,
     )
 
+    parser.add_argument(
+        "--model-preset",
+        type=str,
+        choices=MODEL_CONFIGS.keys(),
+        default="smoke",
+    )
+
+    parser.add_argument(
+        "--train-path",
+        type=Path,
+        default=TRAIN_PATH,
+    )
+
+    parser.add_argument(
+        "--validation-path",
+        type=Path,
+        default=VALIDATION_PATH,
+    )
+
     return parser.parse_args()
 
 def write_csv_log(
@@ -169,7 +186,12 @@ def write_csv_log(
 
         writer.writerow(row)
 
-def validate(model: TransformerLM, validation_data: np.ndarray, batch_size: int) -> float:
+def validate(
+    model: TransformerLM,
+    validation_data: np.ndarray,
+    model_config: ModelConfig,
+    batch_size: int,
+) -> float:
     model.eval()
     losses = []
 
@@ -177,33 +199,51 @@ def validate(model: TransformerLM, validation_data: np.ndarray, batch_size: int)
         for _ in range(EVAL_BATCHES):
             inputs, targets = get_batch(
                 dataset=validation_data,
-                batch_size=BATCH_SIZE,
-                context_length=MODEL_CONFIG.context_length,
+                batch_size=batch_size,
+                context_length=(
+                    model_config.context_length
+                ),
                 device=DEVICE,
             )
+
             logits = model(inputs)
-            flat_logits = logits.reshape(-1, logits.shape[-1])
+
+            flat_logits = logits.reshape(
+                -1,
+                logits.shape[-1],
+            )
             flat_targets = targets.reshape(-1)
-            loss = cross_entropy(flat_logits, flat_targets)
+
+            loss = cross_entropy(
+                flat_logits,
+                flat_targets,
+            )
             losses.append(loss.item())
 
-
     average_loss = sum(losses) / len(losses)
-    model.train()
 
+    model.train()
     return average_loss
 
 def main():
     args = parse_args()
-    
+    model_config = MODEL_CONFIGS[
+        args.model_preset
+    ]
     # Set random seed for reproducibility
     torch.manual_seed(SEED)
     np.random.seed(SEED)
-    train_data = np.load(TRAIN_PATH, mmap_mode="r")
-    validation_data = np.load(VALIDATION_PATH, mmap_mode="r")
+    train_data = np.load(
+        args.train_path,
+        mmap_mode="r",
+    )
+    validation_data = np.load(
+        args.validation_path,
+        mmap_mode="r",
+    )
 
     model = TransformerLM(
-        **MODEL_CONFIG.to_kwargs(),
+        **model_config.to_kwargs(),
         device=DEVICE,
         dtype=torch.float32,
 
@@ -228,7 +268,7 @@ def main():
     training_start_time = time.perf_counter()
     tokens_per_step = (
         args.batch_size
-        * MODEL_CONFIG.context_length
+        * model_config.context_length
     )
 
     completed_steps = start_step
@@ -248,7 +288,7 @@ def main():
         inputs, targets = get_batch(
             dataset=train_data,
             batch_size=args.batch_size,
-            context_length=MODEL_CONFIG.context_length,
+            context_length=model_config.context_length,
             device=DEVICE,
         )
         optimizer.zero_grad(set_to_none=True)
@@ -280,14 +320,14 @@ def main():
                 model=model,
                 optimizer=optimizer,
                 iteration=completed_steps,
-                model_config=MODEL_CONFIG.to_kwargs(),
+                model_config=model_config.to_kwargs(),
                 out=args.checkpoint_path,
             )
             print(f"Checkpoint saved at step {completed_steps}")
 
         validation_loss = None
         if completed_steps % args.eval_interval == 0:
-            validation_loss = validate(model, validation_data, args.batch_size)
+            validation_loss = validate(model=model, validation_data=validation_data, model_config=model_config, batch_size=args.batch_size)
             print(f"Step {step + 1}: Training Loss = {loss.item():.4f}, Validation Loss = {validation_loss:.4f}")
         elapsed_seconds = (
             time.perf_counter()
@@ -324,7 +364,7 @@ def main():
         model=model,
         optimizer=optimizer,
         iteration=completed_steps,
-        model_config=MODEL_CONFIG.to_kwargs(),
+        model_config=model_config.to_kwargs(),
         out=args.checkpoint_path,
     )
 
