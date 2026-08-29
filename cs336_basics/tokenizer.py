@@ -1,10 +1,87 @@
 import os
 import regex as re
 from collections.abc import Iterable, Iterator
+from collections import Counter, defaultdict
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 TOKEN_PATTERN = re.compile(PAT)
 BYTE_TOKENS = tuple(bytes([i]) for i in range(256))
+
+def _merge_token_tuple(
+    token_tuple: tuple[bytes, ...],
+    pair_to_merge: tuple[bytes, bytes],
+) -> tuple[bytes, ...]:
+    left, right = pair_to_merge
+    merged_token = left + right
+
+    new_tokens: list[bytes] = []
+    index = 0
+
+    while index < len(token_tuple):
+        if (
+            index + 1 < len(token_tuple)
+            and token_tuple[index] == left
+            and token_tuple[index + 1] == right
+        ):
+            new_tokens.append(merged_token)
+            index += 2
+        else:
+            new_tokens.append(token_tuple[index])
+            index += 1
+
+    return tuple(new_tokens)
+
+
+def _local_pair_counts(
+    token_tuple: tuple[bytes, ...],
+) -> Counter[tuple[bytes, bytes]]:
+    return Counter(
+        zip(
+            token_tuple,
+            token_tuple[1:],
+        )
+    )
+
+def _iter_non_special_segments(
+    file,
+    special_tokens: list[str],
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[str]:
+    sorted_special_tokens = sorted(
+        special_tokens,
+        key=len,
+        reverse=True,
+    )
+
+    delimiter_pattern = re.compile(
+        "|".join(
+            re.escape(token)
+            for token in sorted_special_tokens
+        )
+    )
+
+    buffer = ""
+
+    while True:
+        chunk = file.read(chunk_size)
+
+        if not chunk:
+            break
+
+        buffer += chunk
+        segment_start = 0
+
+        for match in delimiter_pattern.finditer(buffer):
+            yield buffer[
+                segment_start:match.start()
+            ]
+
+            segment_start = match.end()
+
+        buffer = buffer[segment_start:]
+
+    if buffer:
+        yield buffer
 
 def train_bpe(
     input_path: str | os.PathLike,
@@ -37,63 +114,135 @@ def train_bpe(
     merges = []
     for special_token in special_tokens:
         vocab[len(vocab)] = special_token.encode('utf-8')
-    with open(input_path, "r", encoding = "utf-8") as file:
-        text = file.read()
 
-    pre_token_counts = {}
+    pre_token_counts = Counter()
 
+    with open(input_path,"r",encoding="utf-8",) as file:
+        if special_tokens:
+            segments = _iter_non_special_segments(
+                file,
+                special_tokens,
+            )
+        else:
+            # 기존 동작 유지
+            segments = (file.read(),)
 
+        for segment in segments:
+            for match in TOKEN_PATTERN.finditer(segment):
+                pre_token = match.group(0)
+                encoded = pre_token.encode("utf-8")
 
-    if special_tokens:
-        escaped_tokens = [re.escape(token) for token in special_tokens]
-        delimiter = "|".join(escaped_tokens)
-        segments = re.split(delimiter, text)
+                byte_tuple = tuple(
+                    BYTE_TOKENS[byte_value]
+                    for byte_value in encoded
+                )
 
-    else:
-        segments = [text]
+                pre_token_counts[byte_tuple] += 1
 
-    for segment in segments:
-        for match in TOKEN_PATTERN.finditer(segment):
-            pre_token = match.group(0)
-            encoded = pre_token.encode("utf-8")
-            byte_tuple = tuple(BYTE_TOKENS[byte_value] for byte_value in encoded)
-            pre_token_counts[byte_tuple] = pre_token_counts.get(byte_tuple, 0) + 1
+    words = list(pre_token_counts.keys())
+    word_frequencies = list(pre_token_counts.values())
+    del pre_token_counts
 
+    pair_counts: Counter[
+        tuple[bytes, bytes]
+    ] = Counter()
+
+    pair_to_word_ids: dict[
+        tuple[bytes, bytes],
+        set[int],
+    ] = defaultdict(set)
+
+    for word_id, token_tuple in enumerate(words):
+        frequency = word_frequencies[word_id]
+
+        local_counts = _local_pair_counts(
+            token_tuple
+        )
+
+        for pair, occurrence_count in local_counts.items():
+            pair_counts[pair] += (
+                occurrence_count * frequency
+            )
+
+            pair_to_word_ids[pair].add(
+                word_id
+            )
     while len(vocab) < vocab_size:
-        pair_counts = {}
-
-        for token_tuple, count in pre_token_counts.items():
-            if len(token_tuple) ==1:
-                continue
-            for pair in zip(token_tuple, token_tuple[1:]):
-                pair_counts[pair] = pair_counts.get(pair, 0) + count
-
         if not pair_counts:
             break
 
-        best_pair = max(pair_counts, key = lambda pair: (pair_counts[pair], pair))
-        merged_token = best_pair[0] + best_pair[1]
-        new_pre_token_counts = {}
+        best_pair = max(
+            pair_counts,
+            key=lambda pair: (
+                pair_counts[pair],
+                pair,
+            ),
+        )
 
-        for token_tuple, count in pre_token_counts.items():
-            
-            new_tokens = []
-            index = 0
+        merged_token = (
+            best_pair[0]
+            + best_pair[1]
+        )
 
-            while index < len(token_tuple):
-                if index +1 <len(token_tuple) and (token_tuple[index], token_tuple[index+1]) ==  best_pair:
-                    new_tokens.append(merged_token)
-                    index += 2
-                else:
-                    new_tokens.append(token_tuple[index])
-                    index +=1
-            new_token_tuple = tuple(new_tokens)
-            new_pre_token_counts[new_token_tuple] = new_pre_token_counts.get(new_token_tuple, 0) + count
+        affected_word_ids = list(
+            pair_to_word_ids.get(
+                best_pair,
+                set(),
+            )
+        )
+
+        for word_id in affected_word_ids:
+            old_word = words[word_id]
+            frequency = word_frequencies[word_id]
+
+            old_local_counts = _local_pair_counts(
+                old_word
+            )
+
+            for pair, occurrence_count in (
+                old_local_counts.items()
+            ):
+                pair_counts[pair] -= (
+                    occurrence_count * frequency
+                )
+
+                if pair_counts[pair] <= 0:
+                    del pair_counts[pair]
+
+                indexed_word_ids = (
+                    pair_to_word_ids.get(pair)
+                )
+
+                if indexed_word_ids is not None:
+                    indexed_word_ids.discard(word_id)
+
+                    if not indexed_word_ids:
+                        del pair_to_word_ids[pair]
+
+            new_word = _merge_token_tuple(
+                old_word,
+                best_pair,
+            )
+
+            words[word_id] = new_word
+
+            new_local_counts = _local_pair_counts(
+                new_word
+            )
+
+            for pair, occurrence_count in (
+                new_local_counts.items()
+            ):
+                pair_counts[pair] += (
+                    occurrence_count * frequency
+                )
+
+                pair_to_word_ids[pair].add(
+                    word_id
+                )
 
         merges.append(best_pair)
         vocab[len(vocab)] = merged_token
-        pre_token_counts = new_pre_token_counts
-    
 
     return vocab, merges
 
