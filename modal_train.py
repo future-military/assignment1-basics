@@ -219,22 +219,22 @@ def train_experiment(
         / f"{run_name}.csv"
     )
 
-    if resume and not checkpoint_path.exists():
+    checkpoint_exists = checkpoint_path.exists()
+    effective_resume = (
+        resume
+        or checkpoint_exists
+    )
+
+    if resume and not checkpoint_exists:
         raise FileNotFoundError(
             "Cannot resume because checkpoint does not exist: "
             f"{checkpoint_path}"
         )
 
-    if (
-        not resume
-        and (
-            checkpoint_path.exists()
-            or log_path.exists()
-        )
-    ):
-        raise FileExistsError(
-            f"Run '{run_name}' already exists. "
-            "Use a new run name or enable resume."
+    if checkpoint_exists and not resume:
+        print(
+            "Existing checkpoint detected; "
+            "automatically resuming."
         )
 
     effective_batch_size = (
@@ -257,7 +257,8 @@ def train_experiment(
     print(f"Minimum learning rate: {min_learning_rate}")
     print(f"Warmup steps: {warmup_steps}")
     print(f"Evaluation batches: {eval_batches}")
-    print(f"Resume: {resume}")
+    print(f"Requested resume: {resume}")
+    print(f"Effective resume: {effective_resume}")
 
     command = [
         "python",
@@ -296,7 +297,7 @@ def train_experiment(
         str(log_path),
     ]
 
-    if resume:
+    if effective_resume:
         command.append("--resume")
 
     print("Starting Modal training experiment...")

@@ -423,20 +423,6 @@ def main():
 
         completed_steps = step + 1
 
-        if completed_steps % args.checkpoint_interval == 0:
-            args.checkpoint_path.parent.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-            save_checkpoint(
-                model=model,
-                optimizer=optimizer,
-                iteration=completed_steps,
-                model_config=model_config.to_kwargs(),
-                out=args.checkpoint_path,
-            )
-            print(f"Checkpoint saved at step {completed_steps}")
-
         validation_loss = None
         if completed_steps % args.eval_interval == 0:
             validation_loss = validate(
@@ -447,7 +433,7 @@ def main():
                 eval_batches=args.eval_batches,
             )
             print(f"Step {step + 1}: Training Loss = {train_loss:.4f}, Validation Loss = {validation_loss:.4f}")
-            
+
             if validation_loss < best_validation_loss:
                 best_validation_loss = validation_loss
 
@@ -471,6 +457,22 @@ def main():
                     f"step {completed_steps}: "
                     f"{best_validation_loss:.4f}"
                 )
+        if completed_steps % args.checkpoint_interval == 0:
+            args.checkpoint_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                iteration=completed_steps,
+                model_config=model_config.to_kwargs(),
+                out=args.checkpoint_path,
+            )
+            print(
+                f"Checkpoint saved at step "
+                f"{completed_steps}"
+            )
         elapsed_seconds = (
             time.perf_counter()
             - training_start_time
