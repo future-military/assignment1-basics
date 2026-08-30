@@ -82,6 +82,11 @@ def parse_args() -> argparse.Namespace:
         default=EVAL_INTERVAL,
     )
     parser.add_argument(
+        "--eval-batches",
+        type=int,
+        default=EVAL_BATCHES,
+    )
+    parser.add_argument(
         "--checkpoint-interval",
         type=int,
         default=10,
@@ -194,17 +199,49 @@ def write_csv_log(
 
         writer.writerow(row)
 
+def read_best_validation_loss(
+        log_path: Path,
+    ) -> float:
+        if not log_path.exists():
+            return float("inf")
+
+        validation_losses = []
+
+        with open(
+            log_path,
+            encoding="utf-8",
+            newline="",
+        ) as file:
+            reader = csv.DictReader(file)
+
+            for row in reader:
+                value = row.get(
+                    "validation_loss",
+                    "",
+                ).strip()
+
+                if value:
+                    validation_losses.append(
+                        float(value)
+                    )
+
+        return min(
+            validation_losses,
+            default=float("inf"),
+        )
+
 def validate(
     model: TransformerLM,
     validation_data: np.ndarray,
     model_config: ModelConfig,
     batch_size: int,
+    eval_batches: int,
 ) -> float:
     model.eval()
     losses = []
 
     with torch.no_grad():
-        for _ in range(EVAL_BATCHES):
+        for _ in range(eval_batches):
             inputs, targets = get_batch(
                 dataset=validation_data,
                 batch_size=batch_size,
@@ -238,6 +275,8 @@ def main():
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
+    if args.eval_batches < 1:
+        raise ValueError("eval_batches must be at least 1")
     model_config = MODEL_CONFIGS[args.model_preset]
 
     # Set random seed for reproducibility
@@ -295,6 +334,29 @@ def main():
     )
 
     completed_steps = start_step
+
+    best_checkpoint_path = (
+        args.checkpoint_path.with_name(
+            f"{args.checkpoint_path.stem}"
+            f".best"
+            f"{args.checkpoint_path.suffix}"
+        )
+    )
+
+    if start_step > 0:
+        best_validation_loss = (
+            read_best_validation_loss(
+                args.log_path
+            )
+        )
+    else:
+        best_validation_loss = float("inf")
+
+    if best_validation_loss < float("inf"):
+        print(
+            "Restored best validation loss: "
+            f"{best_validation_loss:.4f}"
+        )
 
     for step in range(start_step, args.max_steps):
         step_start_time = time.perf_counter()
@@ -377,8 +439,38 @@ def main():
 
         validation_loss = None
         if completed_steps % args.eval_interval == 0:
-            validation_loss = validate(model=model, validation_data=validation_data, model_config=model_config, batch_size=args.batch_size)
+            validation_loss = validate(
+                model=model,
+                validation_data=validation_data,
+                model_config=model_config,
+                batch_size=args.batch_size,
+                eval_batches=args.eval_batches,
+            )
             print(f"Step {step + 1}: Training Loss = {train_loss:.4f}, Validation Loss = {validation_loss:.4f}")
+            
+            if validation_loss < best_validation_loss:
+                best_validation_loss = validation_loss
+
+                best_checkpoint_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                save_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    iteration=completed_steps,
+                    model_config=(
+                        model_config.to_kwargs()
+                    ),
+                    out=best_checkpoint_path,
+                )
+
+                print(
+                    "Best checkpoint saved at "
+                    f"step {completed_steps}: "
+                    f"{best_validation_loss:.4f}"
+                )
         elapsed_seconds = (
             time.perf_counter()
             - training_start_time
