@@ -25,18 +25,133 @@ image = (
 )
 
 
+def validate_experiment_config(
+    run_name: str,
+    max_steps: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_steps: int,
+    cosine_cycle_steps: int,
+    eval_interval: int,
+    eval_batches: int,
+    checkpoint_interval: int,
+) -> None:
+    allowed_characters = set(
+        "abcdefghijklmnopqrstuvwxyz"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "0123456789-_"
+    )
+
+    if (
+        not run_name
+        or any(
+            character not in allowed_characters
+            for character in run_name
+        )
+    ):
+        raise ValueError(
+            "run_name may contain only letters, numbers, "
+            "hyphens, and underscores."
+        )
+
+    if max_steps <= 0:
+        raise ValueError("max_steps must be greater than 0.")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than 0.")
+
+    if gradient_accumulation_steps <= 0:
+        raise ValueError(
+            "gradient_accumulation_steps must be "
+            "greater than 0."
+        )
+
+    if max_learning_rate <= 0:
+        raise ValueError(
+            "max_learning_rate must be greater than 0."
+        )
+
+    if min_learning_rate <= 0:
+        raise ValueError(
+            "min_learning_rate must be greater than 0."
+        )
+
+    if min_learning_rate > max_learning_rate:
+        raise ValueError(
+            "min_learning_rate must not exceed "
+            "max_learning_rate."
+        )
+
+    if warmup_steps < 0:
+        raise ValueError(
+            "warmup_steps must be non-negative."
+        )
+
+    if cosine_cycle_steps <= warmup_steps:
+        raise ValueError(
+            "cosine_cycle_steps must be greater than "
+            "warmup_steps."
+        )
+
+    if eval_interval <= 0:
+        raise ValueError(
+            "eval_interval must be greater than 0."
+        )
+
+    if eval_batches <= 0:
+        raise ValueError(
+            "eval_batches must be greater than 0."
+        )
+
+    if checkpoint_interval <= 0:
+        raise ValueError(
+            "checkpoint_interval must be greater than 0."
+        )
+
+
 @app.function(
     image=image,
     gpu="L4",
     cpu=4,
     memory=8192,
-    timeout=2*60*60,
+    timeout=2 * 60 * 60,
     volumes={
         VOLUME_MOUNT: volume,
     },
 )
-def train_baseline() -> None:
+def train_experiment(
+    run_name: str,
+    max_steps: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_steps: int,
+    cosine_cycle_steps: int,
+    eval_interval: int,
+    eval_batches: int,
+    checkpoint_interval: int,
+    resume: bool,
+) -> None:
     import torch
+
+    validate_experiment_config(
+        run_name=run_name,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        gradient_accumulation_steps=(
+            gradient_accumulation_steps
+        ),
+        max_learning_rate=max_learning_rate,
+        min_learning_rate=min_learning_rate,
+        warmup_steps=warmup_steps,
+        cosine_cycle_steps=cosine_cycle_steps,
+        eval_interval=eval_interval,
+        eval_batches=eval_batches,
+        checkpoint_interval=checkpoint_interval,
+    )
 
     print("CUDA available:", torch.cuda.is_available())
 
@@ -96,16 +211,57 @@ def train_baseline() -> None:
     checkpoint_path = (
         volume_root
         / "checkpoints"
-        / "l4_baseline_5000.pt"
+        / f"{run_name}.pt"
     )
     log_path = (
         volume_root
         / "logs"
-        / "l4_baseline_5000.csv"
+        / f"{run_name}.csv"
     )
+
+    if resume and not checkpoint_path.exists():
+        raise FileNotFoundError(
+            "Cannot resume because checkpoint does not exist: "
+            f"{checkpoint_path}"
+        )
+
+    if (
+        not resume
+        and (
+            checkpoint_path.exists()
+            or log_path.exists()
+        )
+    ):
+        raise FileExistsError(
+            f"Run '{run_name}' already exists. "
+            "Use a new run name or enable resume."
+        )
+
+    effective_batch_size = (
+        batch_size
+        * gradient_accumulation_steps
+    )
+    tokens_per_step = effective_batch_size * 256
+    total_tokens = max_steps * tokens_per_step
+
+    print(f"Run name: {run_name}")
+    print(f"Maximum steps: {max_steps}")
+    print(f"Micro batch size: {batch_size}")
+    print(
+        "Gradient accumulation steps:",
+        gradient_accumulation_steps,
+    )
+    print(f"Effective batch size: {effective_batch_size}")
+    print(f"Planned tokens: {total_tokens:,}")
+    print(f"Maximum learning rate: {max_learning_rate}")
+    print(f"Minimum learning rate: {min_learning_rate}")
+    print(f"Warmup steps: {warmup_steps}")
+    print(f"Evaluation batches: {eval_batches}")
+    print(f"Resume: {resume}")
 
     command = [
         "python",
+        "-u",
         "-m",
         "cs336_basics.train",
         "--model-preset",
@@ -115,31 +271,35 @@ def train_baseline() -> None:
         "--validation-path",
         str(local_validation_path),
         "--max-steps",
-        "5000",
+        str(max_steps),
         "--batch-size",
-        "32",
+        str(batch_size),
         "--gradient-accumulation-steps",
-        "1",
+        str(gradient_accumulation_steps),
         "--max-learning-rate",
-        "0.0003",
+        str(max_learning_rate),
         "--min-learning-rate",
-        "0.00003",
+        str(min_learning_rate),
         "--warmup-steps",
-        "500",
+        str(warmup_steps),
         "--cosine-cycle-steps",
-        "5000",
+        str(cosine_cycle_steps),
         "--eval-interval",
-        "100",
+        str(eval_interval),
+        "--eval-batches",
+        str(eval_batches),
         "--checkpoint-interval",
-        "500",
+        str(checkpoint_interval),
         "--checkpoint-path",
         str(checkpoint_path),
         "--log-path",
         str(log_path),
-        "--resume",
     ]
 
-    print("Starting L4 baseline training...")
+    if resume:
+        command.append("--resume")
+
+    print("Starting Modal training experiment...")
 
     subprocess.run(
         command,
@@ -148,11 +308,62 @@ def train_baseline() -> None:
 
     volume.commit()
 
-    print("Baseline training completed.")
+    print("Training experiment completed.")
     print(f"Checkpoint: {checkpoint_path}")
+    print(
+        "Best checkpoint:",
+        checkpoint_path.with_name(
+            f"{checkpoint_path.stem}.best"
+            f"{checkpoint_path.suffix}"
+        ),
+    )
     print(f"CSV log: {log_path}")
 
 
 @app.local_entrypoint()
-def main() -> None:
-    train_baseline.remote()
+def main(
+    run_name: str = "experiment",
+    max_steps: int = 5000,
+    batch_size: int = 32,
+    gradient_accumulation_steps: int = 1,
+    max_learning_rate: float = 0.0003,
+    min_learning_rate: float = 0.00003,
+    warmup_steps: int = 500,
+    cosine_cycle_steps: int = 5000,
+    eval_interval: int = 500,
+    eval_batches: int = 20,
+    checkpoint_interval: int = 500,
+    resume: bool = False,
+) -> None:
+    validate_experiment_config(
+        run_name=run_name,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        gradient_accumulation_steps=(
+            gradient_accumulation_steps
+        ),
+        max_learning_rate=max_learning_rate,
+        min_learning_rate=min_learning_rate,
+        warmup_steps=warmup_steps,
+        cosine_cycle_steps=cosine_cycle_steps,
+        eval_interval=eval_interval,
+        eval_batches=eval_batches,
+        checkpoint_interval=checkpoint_interval,
+    )
+
+    train_experiment.remote(
+        run_name=run_name,
+        max_steps=max_steps,
+        batch_size=batch_size,
+        gradient_accumulation_steps=(
+            gradient_accumulation_steps
+        ),
+        max_learning_rate=max_learning_rate,
+        min_learning_rate=min_learning_rate,
+        warmup_steps=warmup_steps,
+        cosine_cycle_steps=cosine_cycle_steps,
+        eval_interval=eval_interval,
+        eval_batches=eval_batches,
+        checkpoint_interval=checkpoint_interval,
+        resume=resume,
+    )
