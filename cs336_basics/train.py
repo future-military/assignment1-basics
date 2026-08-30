@@ -95,7 +95,15 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=BATCH_SIZE,
     )
-
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help=(
+            "Number of micro-batches accumulated "
+            "before each optimizer step."
+        ),
+    )
     parser.add_argument(
         "--cosine-cycle-steps",
         type=int,
@@ -227,9 +235,11 @@ def validate(
 
 def main():
     args = parse_args()
-    model_config = MODEL_CONFIGS[
-        args.model_preset
-    ]
+
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("gradient_accumulation_steps must be at least 1")
+    model_config = MODEL_CONFIGS[args.model_preset]
+
     # Set random seed for reproducibility
     torch.manual_seed(SEED)
     np.random.seed(SEED)
@@ -266,9 +276,22 @@ def main():
     model.train()
 
     training_start_time = time.perf_counter()
-    tokens_per_step = (
+
+    effective_batch_size = (
         args.batch_size
+        * args.gradient_accumulation_steps
+    )
+
+    tokens_per_step = (
+        effective_batch_size
         * model_config.context_length
+    )
+
+    print(
+        f"Micro batch size: {args.batch_size}, "
+        f"accumulation steps: "
+        f"{args.gradient_accumulation_steps}, "
+        f"effective batch size: {effective_batch_size}"
     )
 
     completed_steps = start_step
@@ -285,20 +308,47 @@ def main():
         for parameter_group in optimizer.param_groups:
             parameter_group["lr"] = learning_rate
 
-        inputs, targets = get_batch(
-            dataset=train_data,
-            batch_size=args.batch_size,
-            context_length=model_config.context_length,
-            device=DEVICE,
-        )
         optimizer.zero_grad(set_to_none=True)
 
-        logits = model(inputs)
-        flat_logits = logits.reshape(-1, logits.shape[-1])
-        flat_targets = targets.reshape(-1)
-        loss = cross_entropy(flat_logits, flat_targets)
-        loss.backward()
-        gradient_clipping(parameters = model.parameters(), max_l2_norm = MAX_GRAD_NORM)
+        train_loss = 0.0
+
+        for _ in range(
+            args.gradient_accumulation_steps
+        ):
+            inputs, targets = get_batch(
+                dataset=train_data,
+                batch_size=args.batch_size,
+                context_length=model_config.context_length,
+                device=DEVICE,
+            )
+
+            logits = model(inputs)
+
+            flat_logits = logits.reshape(
+                -1,
+                logits.shape[-1],
+            )
+            flat_targets = targets.reshape(-1)
+
+            micro_batch_loss = cross_entropy(
+                flat_logits,
+                flat_targets,
+            )
+
+            scaled_loss = (
+                micro_batch_loss
+                / args.gradient_accumulation_steps
+            )
+            scaled_loss.backward()
+
+            train_loss += micro_batch_loss.item()
+
+        train_loss /= args.gradient_accumulation_steps
+
+        gradient_clipping(
+            parameters=model.parameters(),
+            max_l2_norm=MAX_GRAD_NORM,
+        )
         optimizer.step()
 
         step_seconds = (
@@ -328,7 +378,7 @@ def main():
         validation_loss = None
         if completed_steps % args.eval_interval == 0:
             validation_loss = validate(model=model, validation_data=validation_data, model_config=model_config, batch_size=args.batch_size)
-            print(f"Step {step + 1}: Training Loss = {loss.item():.4f}, Validation Loss = {validation_loss:.4f}")
+            print(f"Step {step + 1}: Training Loss = {train_loss:.4f}, Validation Loss = {validation_loss:.4f}")
         elapsed_seconds = (
             time.perf_counter()
             - training_start_time
@@ -343,7 +393,7 @@ def main():
             log_path=args.log_path,
             row={
                 "step": step + 1,
-                "train_loss": loss.item(),
+                "train_loss": train_loss,
                 "validation_loss": validation_loss,
                 "learning_rate": learning_rate,
                 "step_seconds": step_seconds,
@@ -357,7 +407,7 @@ def main():
             ),
         )
 
-        print(step + 1, learning_rate, loss.item())
+        print(step + 1, learning_rate, train_loss)
     checkpoint_dir = args.checkpoint_path.parent
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     save_checkpoint(
