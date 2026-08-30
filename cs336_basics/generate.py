@@ -26,6 +26,11 @@ def parse_args() -> argparse.Namespace:
         default=CHECKPOINT_PATH,
     )
     parser.add_argument(
+        "--tokenizer-path",
+        type=Path,
+        default=TOKENIZER_PATH,
+    )
+    parser.add_argument(
         "--prompt",
         type=str,
         default="Once upon a time",
@@ -48,8 +53,8 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-def load_tokenizer() -> Tokenizer:
-    with open(TOKENIZER_PATH, "rb") as file:
+def load_tokenizer(tokenizer_path: Path,) -> Tokenizer:
+    with open(tokenizer_path, "rb") as file:
         tokenizer_data = pickle.load(file)
 
     return Tokenizer(
@@ -191,9 +196,20 @@ def main() -> None:
 
     torch.manual_seed(42)
 
-    tokenizer = load_tokenizer()
+    tokenizer = load_tokenizer(args.tokenizer_path)
     model, model_config = load_model(args.checkpoint_path)
+    if len(tokenizer.vocab) != model_config.vocab_size:
+        raise ValueError(
+            "Tokenizer vocabulary size does not match "
+            "the model vocabulary size: "
+            f"{len(tokenizer.vocab)} != "
+            f"{model_config.vocab_size}"
+        )
 
+    print(
+        f"Tokenizer vocabulary size: "
+        f"{len(tokenizer.vocab)}"
+    )
 
 
     generated_text = generate(

@@ -28,8 +28,11 @@ def load_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
 ) -> int:
+    
+    model_device = next(model.parameters()).device
     checkpoint = torch.load(
         src,
+        map_location=model_device,
         weights_only=False,
     )
 
