@@ -167,3 +167,11 @@ cython_debug/
 
 # macOS
 .DS_Store
+
+# Datasets, checkpoints, and training artifacts
+data/
+checkpoints/
+*.csv
+*.npy
+*.pt
+*.pth
